@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speed Reader</title>
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      color: #ccc;
+      font-family: sans-serif;
+    }
+    #controls {
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      background: #111;
+      flex-wrap: wrap;
+    }
+    #progressContainer {
+      height: 5px;
+      width: 100%;
+      background: #222;
+    }
+    #progressBar {
+      height: 100%;
+      width: 0;
+      background: #555;
+      transition: width 0.1s linear;
+    }
+    #reader {
+      position: relative;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+    }
+    #centerOpenButton {
+      font-size: 1.5em;
+      padding: 20px 40px;
+      background: #222;
+      color: #ccc;
+      border: 1px solid #333;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    #wordDisplay {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      line-height: 1.5;
+      text-align: center;
+    }
+    .current-word {
+      font-weight: bold;
+      font-size: 1.5em;
+      color: #ccc;
+    }
+    label { font-size: 0.9rem; }
+    select, input[type=number], button, input[type=file] {
+      background: #222;
+      color: #ccc;
+      border: 1px solid #333;
+      padding: 5px;
+      border-radius: 4px;
+    }
+  </style>
+  <!-- JSZip для разбора EPUB -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+</head>
+<body>
+  <div id="controls">
+    <label>Load: <input type="file" id="fileInput" accept=".fb2,.epub,.txt"></label>
+    <label>Font: 
+      <select id="fontSelect">
+        <option value="sans-serif">Sans-serif</option>
+        <option value="serif">Serif</option>
+        <option value="monospace">Monospace</option>
+        <option value="cursive">Cursive</option>
+      </select>
+    </label>
+    <label>Font Size (em): <input type="number" id="fontSizeInput" value="2" step="0.1" min="0.5" max="5"></label>
+    <label>Speed (wpm): <input type="number" id="speedInput" value="300" min="50" max="2000"></label>
+    <label>Start at (%): <input type="number" id="startInput" value="0" step="0.000001" min="0" max="100"></label>
+    <button id="reverseButton">◀</button>
+    <button id="playPauseButton">▶</button>
+    <span id="percentDisplay">0%</span>
+  </div>
+
+  <div id="progressContainer">
+    <div id="progressBar"></div>
+  </div>
+
+  <div id="reader">
+    <button id="centerOpenButton">Open</button>
+    <div id="wordDisplay"></div>
+  </div>
+
+  <script>
+    let words = [], index = 0, timer = null, bookKey = '';
+    let direction = 1, isPlaying = false;
+
+    const fileInput         = document.getElementById('fileInput');
+    const fontSelect        = document.getElementById('fontSelect');
+    const fontSizeInput     = document.getElementById('fontSizeInput');
+    const speedInput        = document.getElementById('speedInput');
+    const startInput        = document.getElementById('startInput');
+    const playPauseButton   = document.getElementById('playPauseButton');
+    const reverseButton     = document.getElementById('reverseButton');
+    const percentDisplay    = document.getElementById('percentDisplay');
+    const progressBar       = document.getElementById('progressBar');
+    const reader            = document.getElementById('reader');
+    const centerOpenButton  = document.getElementById('centerOpenButton');
+    const wordDisplay       = document.getElementById('wordDisplay');
+
+    // Загружаем сохранённые настройки
+    const savedSettings = JSON.parse(localStorage.getItem('fb2_settings')) || {};
+    fontSelect.value    = savedSettings.font     || 'sans-serif';
+    fontSizeInput.value = savedSettings.fontSize || '2';
+    speedInput.value    = savedSettings.speed    || '300';
+    reader.style.fontFamily = fontSelect.value;
+    reader.style.fontSize   = fontSizeInput.value + 'em';
+
+    // Центр. кнопка Open
+    centerOpenButton.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      centerOpenButton.style.display = 'none';
+      wordDisplay.style.display = 'flex';
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (ext === 'fb2') loadFb2(file);
+      else if (ext === 'epub') loadEpub(file);
+      else if (ext === 'txt') loadTxt(file);
+    });
+
+    // Загрузка FB2
+    function loadFb2(file) {
+      const rdr = new FileReader();
+      rdr.onload = e => processRawText(parseFb2(e.target.result));
+      rdr.readAsText(file);
+    }
+    function parseFb2(xml) {
+      const doc = new DOMParser().parseFromString(xml,'application/xml');
+      const body = doc.querySelector('body');
+      return body 
+        ? Array.from(body.querySelectorAll('p,title'))
+            .map(el=>el.textContent.trim()).join(' ')
+        : '';
+    }
+
+    // Загрузка EPUB
+    function loadEpub(file) {
+      JSZip.loadAsync(file).then(zip=>{
+        const parts = [];
+        zip.forEach((path, ent) => {
+          if (/\.(xhtml|html|xml)$/i.test(path))
+            parts.push(ent.async("string")
+              .then(txt=>{
+                const b = new DOMParser()
+                          .parseFromString(txt,"application/xml")
+                          .querySelector("body");
+                return b?b.textContent.trim():"";
+              }));
+        });
+        return Promise.all(parts);
+      }).then(arr=>processRawText(arr.join(" ")));
+    }
+
+    // Загрузка TXT
+    function loadTxt(file) {
+      const rdr = new FileReader();
+      rdr.onload = e => processRawText(e.target.result);
+      rdr.readAsText(file);
+    }
+
+    // Общая обработка текста
+    function processRawText(raw) {
+      bookKey = 'book_'+hashCode(raw);
+      words = raw.split(/\s+/).filter(w=>w);
+      const prog = JSON.parse(localStorage.getItem('fb2_progress'))||{};
+      if (prog[bookKey]) {
+        index = prog[bookKey].index;
+        startInput.value = prog[bookKey].percent;
+      } else {
+        index = 0;
+        startInput.value = '0';
+      }
+      updateDisplay();
+    }
+
+    // Слушатели настроек
+    fontSelect.addEventListener('change', ()=>{ reader.style.fontFamily=fontSelect.value; saveSettings(); });
+    fontSizeInput.addEventListener('input', ()=>{ reader.style.fontSize=fontSizeInput.value+'em'; saveSettings(); });
+    speedInput.addEventListener('input', saveSettings);
+
+    // Play/Pause — всегда стартуем с процента из поля
+    playPauseButton.addEventListener('click', ()=>{
+      if(isPlaying) stopReading();
+      else startFromInput();
+    });
+    reverseButton.addEventListener('click', ()=>{
+      direction = -1;
+      startFromInput();
+    });
+
+    // Горячие клавиши
+    document.addEventListener('keydown', e=>{
+      switch(e.code){
+        case 'ArrowRight':
+          direction = 1; startFromInput(); break;
+        case 'ArrowLeft':
+          direction = -1; startFromInput(); break;
+        case 'ArrowUp':
+          fontSizeInput.stepUp(); fontSizeInput.dispatchEvent(new Event('input')); break;
+        case 'ArrowDown':
+          fontSizeInput.stepDown(); fontSizeInput.dispatchEvent(new Event('input')); break;
+        case 'Space':
+          e.preventDefault();
+          playPauseButton.click();
+          break;
+      }
+    });
+
+    function startFromInput() {
+      if(!words.length) return;
+      index = Math.floor((parseFloat(startInput.value)/100)*words.length);
+      const delay = 60000/parseInt(speedInput.value,10);
+      clearInterval(timer);
+      timer = setInterval(()=>{
+        if((direction===1 && index>=words.length) || (direction===-1 && index<0)){
+          stopReading();
+          return;
+        }
+        updateDisplay();
+        index += direction;
+      }, delay);
+      playPauseButton.textContent='⏸';
+      isPlaying = true;
+    }
+
+    function stopReading() {
+      clearInterval(timer);
+      playPauseButton.textContent='▶';
+      isPlaying = false;
+    }
+
+    function updateDisplay() {
+      const pct = (index/words.length)*100;
+      percentDisplay.textContent = pct.toFixed(6)+'%';
+      progressBar.style.width = pct+'%';
+      startInput.value = pct.toFixed(6);
+      const prog = JSON.parse(localStorage.getItem('fb2_progress'))||{};
+      prog[bookKey] = { index, percent: pct.toFixed(6) };
+      localStorage.setItem('fb2_progress', JSON.stringify(prog));
+
+      wordDisplay.innerHTML = '';
+      for(let i=index-5; i<=index+5; i++){
+        if(i<0||i>=words.length) continue;
+        const span = document.createElement('div');
+        span.textContent = words[i];
+        if(i===index){
+          span.className='current-word';
+        } else {
+          const d=Math.abs(i-index), f=1-d/6;
+          const c=Math.floor(f*204).toString(16).padStart(2,'0');
+          span.style.color = `#${c}${c}${c}`;
+        }
+        wordDisplay.appendChild(span);
+      }
+    }
+
+    function saveSettings() {
+      localStorage.setItem('fb2_settings',
+        JSON.stringify({
+          font: fontSelect.value,
+          fontSize: fontSizeInput.value,
+          speed: speedInput.value
+        })
+      );
+    }
+
+    function hashCode(s) {
+      return Array.from(s).reduce((h,ch)=>
+        (((h<<5)-h)+ch.charCodeAt(0))|0,0
+      ).toString();
+    }
+  </script>
+</body>
+</html>
