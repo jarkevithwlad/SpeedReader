@@ -40,6 +40,12 @@
       align-items: center;
       justify-content: center;
       font-size: 2rem;
+      /* отключаем выделение и меню на iOS */
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
     #centerOpenButton {
       font-size: 1.5em;
@@ -56,6 +62,12 @@
       align-items: center;
       line-height: 1.5;
       text-align: center;
+      /* отключаем выделение и меню */
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
     .current-word {
       font-weight: bold;
@@ -103,21 +115,26 @@
   </div>
 
   <script>
-    let words = [], index = 0, timer = null, bookKey = '';
-    let direction = 1, isPlaying = false;
+    let words = [];
+    let index = 0;
+    let timer = null;
+    let bookKey = '';
+    let direction = 1;
+    let isPlaying = false;
+    let wakeLock = null;
 
-    const fileInput         = document.getElementById('fileInput');
-    const fontSelect        = document.getElementById('fontSelect');
-    const fontSizeInput     = document.getElementById('fontSizeInput');
-    const speedInput        = document.getElementById('speedInput');
-    const startInput        = document.getElementById('startInput');
-    const playPauseButton   = document.getElementById('playPauseButton');
-    const reverseButton     = document.getElementById('reverseButton');
-    const percentDisplay    = document.getElementById('percentDisplay');
-    const progressBar       = document.getElementById('progressBar');
-    const reader            = document.getElementById('reader');
-    const centerOpenButton  = document.getElementById('centerOpenButton');
-    const wordDisplay       = document.getElementById('wordDisplay');
+    const fileInput        = document.getElementById('fileInput');
+    const fontSelect       = document.getElementById('fontSelect');
+    const fontSizeInput    = document.getElementById('fontSizeInput');
+    const speedInput       = document.getElementById('speedInput');
+    const startInput       = document.getElementById('startInput');
+    const playPauseButton  = document.getElementById('playPauseButton');
+    const reverseButton    = document.getElementById('reverseButton');
+    const percentDisplay   = document.getElementById('percentDisplay');
+    const progressBar      = document.getElementById('progressBar');
+    const reader           = document.getElementById('reader');
+    const centerOpenButton = document.getElementById('centerOpenButton');
+    const wordDisplay      = document.getElementById('wordDisplay');
 
     // Загружаем сохранённые настройки
     const savedSettings = JSON.parse(localStorage.getItem('fb2_settings')) || {};
@@ -127,14 +144,14 @@
     reader.style.fontFamily = fontSelect.value;
     reader.style.fontSize   = fontSizeInput.value + 'em';
 
-    // Центр. кнопка Open
+    // Открытие файла
     centerOpenButton.addEventListener('click', () => fileInput.click());
 
     fileInput.addEventListener('change', () => {
       const file = fileInput.files[0];
       if (!file) return;
       centerOpenButton.style.display = 'none';
-      wordDisplay.style.display = 'flex';
+      wordDisplay.style.display     = 'flex';
       const ext = file.name.split('.').pop().toLowerCase();
       if (ext === 'fb2') loadFb2(file);
       else if (ext === 'epub') loadEpub(file);
@@ -148,30 +165,30 @@
       rdr.readAsText(file);
     }
     function parseFb2(xml) {
-      const doc = new DOMParser().parseFromString(xml,'application/xml');
+      const doc = new DOMParser().parseFromString(xml, 'application/xml');
       const body = doc.querySelector('body');
-      return body 
+      return body
         ? Array.from(body.querySelectorAll('p,title'))
-            .map(el=>el.textContent.trim()).join(' ')
+            .map(el => el.textContent.trim()).join(' ')
         : '';
     }
 
     // Загрузка EPUB
     function loadEpub(file) {
-      JSZip.loadAsync(file).then(zip=>{
+      JSZip.loadAsync(file).then(zip => {
         const parts = [];
         zip.forEach((path, ent) => {
-          if (/\.(xhtml|html|xml)$/i.test(path))
-            parts.push(ent.async("string")
-              .then(txt=>{
-                const b = new DOMParser()
-                          .parseFromString(txt,"application/xml")
-                          .querySelector("body");
-                return b?b.textContent.trim():"";
-              }));
+          if (/\.(xhtml|html|xml)$/i.test(path)) {
+            parts.push(ent.async('string').then(txt => {
+              const b = new DOMParser()
+                .parseFromString(txt, 'application/xml')
+                .querySelector('body');
+              return b ? b.textContent.trim() : '';
+            }));
+          }
         });
         return Promise.all(parts);
-      }).then(arr=>processRawText(arr.join(" ")));
+      }).then(arr => processRawText(arr.join(' ')));
     }
 
     // Загрузка TXT
@@ -183,9 +200,10 @@
 
     // Общая обработка текста
     function processRawText(raw) {
-      bookKey = 'book_'+hashCode(raw);
-      words = raw.split(/\s+/).filter(w=>w);
-      const prog = JSON.parse(localStorage.getItem('fb2_progress'))||{};
+      const hash = hashCode(raw);
+      bookKey = 'book_' + hash;
+      words = raw.split(/\s+/).filter(Boolean);
+      const prog = JSON.parse(localStorage.getItem('fb2_progress')) || {};
       if (prog[bookKey]) {
         index = prog[bookKey].index;
         startInput.value = prog[bookKey].percent;
@@ -196,32 +214,25 @@
       updateDisplay();
     }
 
-    // Слушатели настроек
-    fontSelect.addEventListener('change', ()=>{ reader.style.fontFamily=fontSelect.value; saveSettings(); });
-    fontSizeInput.addEventListener('input', ()=>{ reader.style.fontSize=fontSizeInput.value+'em'; saveSettings(); });
+    // Настройки
+    fontSelect.addEventListener('change', () => { reader.style.fontFamily = fontSelect.value; saveSettings(); });
+    fontSizeInput.addEventListener('input', () => { reader.style.fontSize = fontSizeInput.value + 'em'; saveSettings(); });
     speedInput.addEventListener('input', saveSettings);
 
-    // Play/Pause — всегда стартуем с процента из поля
-    playPauseButton.addEventListener('click', ()=>{
-      if(isPlaying) stopReading();
+    // Play/Pause
+    playPauseButton.addEventListener('click', () => {
+      if (isPlaying) stopReading();
       else startFromInput();
     });
-    reverseButton.addEventListener('click', ()=>{
-      direction = -1;
-      startFromInput();
-    });
+    reverseButton.addEventListener('click', () => { direction = -1; startFromInput(); });
 
     // Горячие клавиши
-    document.addEventListener('keydown', e=>{
-      switch(e.code){
-        case 'ArrowRight':
-          direction = 1; startFromInput(); break;
-        case 'ArrowLeft':
-          direction = -1; startFromInput(); break;
-        case 'ArrowUp':
-          fontSizeInput.stepUp(); fontSizeInput.dispatchEvent(new Event('input')); break;
-        case 'ArrowDown':
-          fontSizeInput.stepDown(); fontSizeInput.dispatchEvent(new Event('input')); break;
+    document.addEventListener('keydown', e => {
+      switch (e.code) {
+        case 'ArrowRight': direction = 1; startFromInput(); break;
+        case 'ArrowLeft':  direction = -1; startFromInput(); break;
+        case 'ArrowUp':    fontSizeInput.stepUp(); fontSizeInput.dispatchEvent(new Event('input')); break;
+        case 'ArrowDown':  fontSizeInput.stepDown(); fontSizeInput.dispatchEvent(new Event('input')); break;
         case 'Space':
           e.preventDefault();
           playPauseButton.click();
@@ -229,48 +240,82 @@
       }
     });
 
+    // Тап по области чтения для play/pause
+    reader.addEventListener('click', e => {
+      if (centerOpenButton.style.display !== 'none') return;
+      if (e.target.closest('#controls')) return;
+      playPauseButton.click();
+    });
+
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeLock.addEventListener('release', () => {
+            console.log('Wake Lock was released');
+          });
+          console.log('Wake Lock is active');
+        }
+      } catch (err) {
+        console.error(`Wake Lock error: ${err.name}, ${err.message}`);
+      }
+    }
+
+    function releaseWakeLock() {
+      if (wakeLock) {
+        wakeLock.release().then(() => { wakeLock = null; });
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (wakeLock && document.visibilityState === 'visible') {
+        requestWakeLock();
+      }
+    });
+
     function startFromInput() {
-      if(!words.length) return;
-      index = Math.floor((parseFloat(startInput.value)/100)*words.length);
-      const delay = 60000/parseInt(speedInput.value,10);
+      if (!words.length) return;
+      index = Math.floor((parseFloat(startInput.value) / 100) * words.length);
+      const delay = 60000 / parseInt(speedInput.value, 10);
       clearInterval(timer);
-      timer = setInterval(()=>{
-        if((direction===1 && index>=words.length) || (direction===-1 && index<0)){
+      timer = setInterval(() => {
+        if ((direction === 1 && index >= words.length) || (direction === -1 && index < 0)) {
           stopReading();
           return;
         }
         updateDisplay();
         index += direction;
       }, delay);
-      playPauseButton.textContent='⏸';
+      playPauseButton.textContent = '⏸';
       isPlaying = true;
+      requestWakeLock();
     }
 
     function stopReading() {
       clearInterval(timer);
-      playPauseButton.textContent='▶';
+      playPauseButton.textContent = '▶';
       isPlaying = false;
+      releaseWakeLock();
     }
 
     function updateDisplay() {
-      const pct = (index/words.length)*100;
-      percentDisplay.textContent = pct.toFixed(6)+'%';
-      progressBar.style.width = pct+'%';
+      const pct = (index / words.length) * 100;
+      percentDisplay.textContent = pct.toFixed(6) + '%';
+      progressBar.style.width = pct + '%';
       startInput.value = pct.toFixed(6);
-      const prog = JSON.parse(localStorage.getItem('fb2_progress'))||{};
+      const prog = JSON.parse(localStorage.getItem('fb2_progress')) || {};
       prog[bookKey] = { index, percent: pct.toFixed(6) };
       localStorage.setItem('fb2_progress', JSON.stringify(prog));
 
       wordDisplay.innerHTML = '';
-      for(let i=index-5; i<=index+5; i++){
-        if(i<0||i>=words.length) continue;
+      for (let i = index - 5; i <= index + 5; i++) {
+        if (i < 0 || i >= words.length) continue;
         const span = document.createElement('div');
         span.textContent = words[i];
-        if(i===index){
-          span.className='current-word';
-        } else {
-          const d=Math.abs(i-index), f=1-d/6;
-          const c=Math.floor(f*204).toString(16).padStart(2,'0');
+        if (i === index) span.className = 'current-word';
+        else {
+          const d = Math.abs(i - index), f = 1 - d / 6;
+          const c = Math.floor(f * 204).toString(16).padStart(2, '0');
           span.style.color = `#${c}${c}${c}`;
         }
         wordDisplay.appendChild(span);
@@ -278,19 +323,20 @@
     }
 
     function saveSettings() {
-      localStorage.setItem('fb2_settings',
-        JSON.stringify({
-          font: fontSelect.value,
-          fontSize: fontSizeInput.value,
-          speed: speedInput.value
-        })
-      );
+      localStorage.setItem('fb2_settings', JSON.stringify({
+        font: fontSelect.value,
+        fontSize: fontSizeInput.value,
+        speed: speedInput.value
+      }));
     }
 
     function hashCode(s) {
-      return Array.from(s).reduce((h,ch)=>
-        (((h<<5)-h)+ch.charCodeAt(0))|0,0
-      ).toString();
+      let hash = 0;
+      for (let i = 0; i < s.length; i++) {
+        hash = ((hash << 5) - hash) + s.charCodeAt(i);
+        hash |= 0;
+      }
+      return hash.toString();
     }
   </script>
 </body>
