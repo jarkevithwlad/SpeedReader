@@ -102,7 +102,6 @@
     <label>Start at (%): <input type="number" id="startInput" value="0" step="0.000001" min="0" max="100"></label>
     <button id="reverseButton">◀</button>
     <button id="playPauseButton">▶</button>
-    <span id="percentDisplay">0%</span>
   </div>
 
   <div id="progressContainer">
@@ -130,7 +129,6 @@
     const startInput       = document.getElementById('startInput');
     const playPauseButton  = document.getElementById('playPauseButton');
     const reverseButton    = document.getElementById('reverseButton');
-    const percentDisplay   = document.getElementById('percentDisplay');
     const progressBar      = document.getElementById('progressBar');
     const reader           = document.getElementById('reader');
     const centerOpenButton = document.getElementById('centerOpenButton');
@@ -300,7 +298,6 @@
 
     function updateDisplay() {
       const pct = (index / words.length) * 100;
-      percentDisplay.textContent = pct.toFixed(6) + '%';
       progressBar.style.width = pct + '%';
       startInput.value = pct.toFixed(6);
       const prog = JSON.parse(localStorage.getItem('fb2_progress')) || {};
