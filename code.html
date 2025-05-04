@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speed Reader</title>
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: #000;
+      color: #ccc;
+      font-family: sans-serif;
+    }
+
+    #controls {
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      background: #111;
+      flex-wrap: wrap;
+    }
+
+    #progressContainer {
+      height: 5px;
+      width: 100%;
+      background: #222;
+    }
+
+    #progressBar {
+      height: 100%;
+      width: 0;
+      background: #555;
+      transition: width 0.1s linear;
+    }
+
+    #reader {
+      position: relative;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+      /* отключаем выделение и меню на iOS */
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    #centerOpenButton {
+      font-size: 1.5em;
+      padding: 20px 40px;
+      background: #222;
+      color: #ccc;
+      border: 1px solid #333;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    #wordDisplay {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      line-height: 1.5;
+      text-align: center;
+      /* отключаем выделение и меню */
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
+
+    .current-word {
+      font-weight: bold;
+      font-size: 1.5em;
+      color: #ccc; /* Основной цвет центрального слова */
+    }
+
+    label {
+      font-size: 0.9rem;
+    }
+
+    select,
+    input[type=number],
+    button,
+    input[type=file] {
+      background: #222;
+      color: #ccc;
+      border: 1px solid #333;
+      padding: 5px;
+      border-radius: 4px;
+    }
+  </style>
+  <!-- JSZip для разбора EPUB -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+</head>
+
+<body>
+  <div id="controls">
+    <label>Load: <input type="file" id="fileInput" accept=".fb2,.epub,.txt"></label>
+    <label>Font:
+      <select id="fontSelect">
+        <option value="sans-serif">Sans-serif</option>
+        <option value="serif">Serif</option>
+        <option value="monospace">Monospace</option>
+        <option value="cursive">Cursive</option>
+      </select>
+    </label>
+    <label>Font Size (em): <input type="number" id="fontSizeInput" value="2" step="0.1" min="0.5" max="5"></label>
+    <label>Speed (wpm): <input type="number" id="speedInput" value="300" min="50" max="2000"></label>
+    <label>Start at (%): <input type="number" id="startInput" value="0" step="0.000001" min="0" max="100"></label>
+    <button id="reverseButton">◀</button>
+    <button id="playPauseButton">▶</button>
+  </div>
+
+  <div id="progressContainer">
+    <div id="progressBar"></div>
+  </div>
+
+  <div id="reader">
+    <button id="centerOpenButton">Open</button>
+    <div id="wordDisplay"></div>
+  </div>
+
+  <script>
+    let words = [];
+    let index = 0;
+    let timer = null;
+    let bookKey = '';
+    let direction = 1;
+    let isPlaying = false;
+    let wakeLock = null;
+
+    const fileInput = document.getElementById('fileInput');
+    const fontSelect = document.getElementById('fontSelect');
+    const fontSizeInput = document.getElementById('fontSizeInput');
+    const speedInput = document.getElementById('speedInput');
+    const startInput = document.getElementById('startInput');
+    const playPauseButton = document.getElementById('playPauseButton');
+    const reverseButton = document.getElementById('reverseButton');
+    const progressBar = document.getElementById('progressBar');
+    const reader = document.getElementById('reader');
+    const centerOpenButton = document.getElementById('centerOpenButton');
+    const wordDisplay = document.getElementById('wordDisplay');
+
+    // Загружаем сохранённые настройки
+    const savedSettings = JSON.parse(localStorage.getItem('fb2_settings')) || {};
+    fontSelect.value = savedSettings.font || 'sans-serif';
+    fontSizeInput.value = savedSettings.fontSize || '2';
+    speedInput.value = savedSettings.speed || '300';
+    reader.style.fontFamily = fontSelect.value;
+    reader.style.fontSize = fontSizeInput.value + 'em';
+
+    // Открытие файла
+    centerOpenButton.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      centerOpenButton.style.display = 'none';
+      wordDisplay.style.display = 'flex';
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (ext === 'fb2') loadFb2(file);
+      else if (ext === 'epub') loadEpub(file);
+      else if (ext === 'txt') loadTxt(file);
+    });
+
+    // Загрузка FB2
+    function loadFb2(file) {
+      const rdr = new FileReader();
+      rdr.onload = e => processRawText(parseFb2(e.target.result), file.name);
+      rdr.readAsText(file);
+    }
+    function parseFb2(xml) {
+      const doc = new DOMParser().parseFromString(xml, 'application/xml');
+      const body = doc.querySelector('body');
+      // Добавляем заголовки из description, если они есть
+      const titleInfo = doc.querySelector('description > title-info');
+      let titleText = '';
+      if (titleInfo) {
+        const genre = titleInfo.querySelector('genre');
+        const author = titleInfo.querySelector('author');
+        const bookTitle = titleInfo.querySelector('book-title');
+        const annotation = titleInfo.querySelector('annotation');
+        titleText = [
+          genre?.textContent,
+          author?.querySelector('first-name')?.textContent,
+          author?.querySelector('last-name')?.textContent,
+          bookTitle?.textContent,
+          annotation?.textContent
+        ].filter(Boolean).join(' ');
+      }
+      const bodyText = body
+        ? Array.from(body.querySelectorAll('p, title, subtitle, section > title > p')) // Добавил subtitle и section>title>p
+          .map(el => el.textContent.trim()).join(' ')
+        : '';
+      return (titleText + ' ' + bodyText).trim();
+    }
+
+    // Загрузка EPUB
+    function loadEpub(file) {
+      JSZip.loadAsync(file).then(zip => {
+        // Пытаемся найти OPF файл для порядка чтения
+        return zip.file("META-INF/container.xml").async("string").then(containerXml => {
+          const parser = new DOMParser();
+          const containerDoc = parser.parseFromString(containerXml, "application/xml");
+          const opfPath = containerDoc.querySelector("rootfile")?.getAttribute("full-path");
+          if (!opfPath) throw new Error("OPF file not found in EPUB");
+          return zip.file(opfPath).async("string");
+        }).then(opfContent => {
+          const parser = new DOMParser();
+          const opfDoc = parser.parseFromString(opfContent, "application/xml");
+          const manifestItems = {};
+          opfDoc.querySelectorAll("manifest > item").forEach(item => {
+             const id = item.getAttribute("id");
+             const href = item.getAttribute("href");
+             if (id && href) {
+                // Нужно найти полный путь от корня EPUB
+                const opfDir = opfPath.substring(0, opfPath.lastIndexOf('/'));
+                manifestItems[id] = (opfDir ? opfDir + '/' : '') + href;
+             }
+          });
+
+          const spineRefs = Array.from(opfDoc.querySelectorAll("spine > itemref"))
+                                 .map(itemref => itemref.getAttribute("idref"))
+                                 .filter(Boolean);
+
+          const orderedPaths = spineRefs.map(idref => manifestItems[idref]).filter(Boolean);
+
+          const contentPromises = orderedPaths.map(path => {
+            const fileEntry = zip.file(path);
+            if (fileEntry && /\.(xhtml|html|xml)$/i.test(path)) {
+               return fileEntry.async('string').then(txt => {
+                 const b = new DOMParser()
+                   .parseFromString(txt, 'application/xhtml+xml') // Используем application/xhtml+xml
+                   .querySelector('body');
+                 // Простая очистка HTML тегов, можно улучшить
+                 return b ? b.textContent.replace(/<[^>]+>/g, ' ').trim() : '';
+               }).catch(err => {
+                 console.warn(`Could not parse ${path}: ${err}`);
+                 return ''; // Возвращаем пустую строку при ошибке парсинга файла
+               });
+            }
+            return Promise.resolve(''); // Возвращаем пустую строку для не-HTML/XML файлов в spine
+          });
+          return Promise.all(contentPromises);
+        });
+      }).then(arr => processRawText(arr.join(' '), file.name))
+      .catch(err => {
+          console.error("Error loading EPUB:", err);
+          alert("Failed to load EPUB: " + err.message);
+          processRawText('', 'error'); // Показываем пустой экран
+      });
+    }
+
+    // Загрузка TXT
+    function loadTxt(file) {
+      const rdr = new FileReader();
+      rdr.onload = e => processRawText(e.target.result, file.name);
+      rdr.readAsText(file); // Можно указать кодировку, если нужно, например 'windows-1251'
+    }
+
+    // Общая обработка текста
+    function processRawText(raw, filename = 'unknown') {
+      // Простая очистка: замена множественных пробелов/переносов строк одним пробелом
+      const cleanedText = raw.replace(/\s+/g, ' ').trim();
+      // Генерируем ключ на основе имени файла и первых/последних символов текста для уникальности
+      const textSample = cleanedText.substring(0, 50) + cleanedText.substring(cleanedText.length - 50);
+      bookKey = 'book_' + filename + '_' + hashCode(textSample);
+
+      words = cleanedText.split(' ').filter(Boolean); // Разделяем по одному пробелу
+      const prog = JSON.parse(localStorage.getItem('fb2_progress')) || {};
+      if (prog[bookKey]) {
+        // Убедимся, что сохраненный индекс не выходит за пределы нового массива слов
+        index = Math.min(prog[bookKey].index, words.length - 1);
+        startInput.value = (index / (words.length -1 || 1) * 100).toFixed(6); // Пересчитываем % на случай изменения кол-ва слов
+      } else {
+        index = 0;
+        startInput.value = '0';
+      }
+      // Если файл пустой или не удалось распарсить
+      if (words.length === 0) {
+          wordDisplay.innerHTML = '<div class="current-word">No text loaded</div>';
+          progressBar.style.width = '0%';
+          startInput.value = '0';
+          stopReading(); // Останавливаем чтение, если оно было запущено
+          return; // Выходим, чтобы не вызывать updateDisplay с пустым массивом
+      }
+      updateDisplay(); // Обновляем отображение с начальной позиции
+    }
+
+
+    // Настройки
+    fontSelect.addEventListener('change', () => { reader.style.fontFamily = fontSelect.value; saveSettings(); });
+    fontSizeInput.addEventListener('input', () => { reader.style.fontSize = fontSizeInput.value + 'em'; saveSettings(); });
+    speedInput.addEventListener('input', () => {
+        saveSettings();
+        // Если проигрывание активно, перезапускаем таймер с новой скоростью
+        if (isPlaying) {
+            startFromCurrentIndex(); // Нужна функция перезапуска с текущего индекса
+        }
+    });
+    // Обновление позиции при изменении значения в поле Start at (%)
+    startInput.addEventListener('change', () => {
+        if (!isPlaying) { // Обновляем позицию только если не проигрывается
+            index = Math.max(0, Math.min(words.length - 1, Math.floor((parseFloat(startInput.value) / 100) * words.length)));
+            updateDisplay();
+        }
+    });
+    // Прокрутка колесом мыши или тачпадом для перемещения по тексту
+    reader.addEventListener('wheel', (e) => {
+        if (isPlaying || words.length === 0 || centerOpenButton.style.display !== 'none') return;
+        e.preventDefault(); // Предотвращаем прокрутку страницы
+        const delta = Math.sign(e.deltaY); // Направление прокрутки (1 - вниз, -1 - вверх)
+        const jump = Math.max(1, Math.floor(words.length * 0.001)); // Прыжок ~0.1% книги
+        index = Math.max(0, Math.min(words.length - 1, index + delta * jump));
+        updateDisplay();
+    });
+
+    // Play/Pause
+    playPauseButton.addEventListener('click', () => {
+      if (isPlaying) {
+        stopReading();
+      } else {
+        startReading(1); // Запускаем вперед
+      }
+    });
+
+    reverseButton.addEventListener('click', () => {
+        if (isPlaying && direction === -1) { // Если уже играем назад, останавливаем
+            stopReading();
+        } else {
+            startReading(-1); // Запускаем назад
+        }
+    });
+
+    // Горячие клавиши
+    document.addEventListener('keydown', e => {
+      // Игнорируем события, если фокус на полях ввода
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
+           // Разрешаем стрелки влево/вправо в числовых полях
+           if (e.target.type === 'number' && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+               return;
+           }
+           // Разрешаем пробел в текстовых полях (если они появятся)
+           if (e.target.type === 'text' && e.code === 'Space') {
+               return;
+           }
+           // Во всех остальных случаях для полей ввода - выходим
+           if (e.code !== 'Escape') { // Escape может убирать фокус
+             return;
+           }
+      }
+
+      switch (e.code) {
+        case 'ArrowRight':
+            e.preventDefault();
+            if (isPlaying) stopReading(); // Остановить если играло
+            direction = 1;
+            index = Math.min(words.length - 1, index + 1);
+            updateDisplay();
+            break;
+        case 'ArrowLeft':
+            e.preventDefault();
+            if (isPlaying) stopReading(); // Остановить если играло
+            direction = -1;
+            index = Math.max(0, index - 1);
+            updateDisplay();
+            break;
+         case 'ArrowUp':
+             e.preventDefault();
+             fontSizeInput.stepUp();
+             fontSizeInput.dispatchEvent(new Event('input'));
+             break;
+         case 'ArrowDown':
+             e.preventDefault();
+             fontSizeInput.stepDown();
+             fontSizeInput.dispatchEvent(new Event('input'));
+             break;
+        case 'Space':
+          e.preventDefault();
+          playPauseButton.click(); // Триггерим кнопку Play/Pause
+          break;
+        case 'KeyO': // Добавим клавишу O для открытия файла
+          if (!e.metaKey && !e.ctrlKey && !e.altKey) { // Убедимся, что не нажаты модификаторы
+              e.preventDefault();
+              fileInput.click();
+          }
+          break;
+        case 'Enter': // Enter может использоваться для запуска с текущей позиции
+            e.preventDefault();
+            if (!isPlaying) {
+                startReading(1); // Начать играть вперед
+            }
+            break;
+        case 'Backspace': // Backspace может использоваться для запуска назад
+            e.preventDefault();
+             if (!isPlaying) {
+                startReading(-1); // Начать играть назад
+            }
+            break;
+      }
+    });
+
+    // Тап по области чтения для play/pause
+    reader.addEventListener('click', e => {
+      if (centerOpenButton.style.display !== 'none') return; // Не реагируем, если кнопка Open видима
+      if (e.target.closest('#controls')) return; // Не реагируем на клики в контролах
+      playPauseButton.click(); // Иначе - Play/Pause
+    });
+
+    // --- Wake Lock ---
+    async function requestWakeLock() {
+      if ('wakeLock' in navigator) {
+          try {
+            wakeLock = await navigator.wakeLock.request('screen');
+            wakeLock.addEventListener('release', () => {
+              // Флаг isPlaying проверяется, чтобы не запрашивать блокировку снова,
+              // если она была отпущена вручную (например, при паузе)
+              if (isPlaying) {
+                  console.log('Wake Lock released unexpectedly, re-requesting...');
+                  requestWakeLock(); // Попробовать запросить снова
+              } else {
+                  console.log('Wake Lock released.');
+              }
+            });
+            console.log('Wake Lock is active.');
+          } catch (err) {
+            console.error(`Wake Lock error: ${err.name}, ${err.message}`);
+          }
+      }
+    }
+
+    function releaseWakeLock() {
+      if (wakeLock) {
+        wakeLock.release().then(() => {
+            // console.log('Wake Lock released manually.'); // Можно убрать для чистоты лога
+            wakeLock = null;
+        }).catch(err => console.error(`Wake Lock release error: ${err.name}, ${err.message}`));;
+      }
+    }
+
+    // Перезапрашиваем блокировку при возвращении на вкладку, если проигрывание активно
+    document.addEventListener('visibilitychange', () => {
+      if (wakeLock && document.visibilityState === 'visible' && isPlaying) {
+        requestWakeLock();
+      }
+    });
+    // --- End Wake Lock ---
+
+    // Запускает или перезапускает чтение с ТЕКУЩЕГО индекса и заданным направлением
+    function startReading(newDirection) {
+      if (!words.length) return;
+      direction = newDirection; // Устанавливаем направление
+      const delay = 60000 / parseInt(speedInput.value, 10);
+      clearInterval(timer); // Очищаем предыдущий таймер, если был
+
+      // Немедленно показываем текущее слово перед запуском таймера
+      updateDisplay();
+
+      timer = setInterval(() => {
+        index += direction; // Сдвигаем индекс
+
+        // Проверяем выход за границы
+        if ((direction === 1 && index >= words.length) || (direction === -1 && index < 0)) {
+          // Корректируем индекс, чтобы он оставался в пределах
+          index = Math.max(0, Math.min(words.length - 1, index - direction));
+          stopReading(); // Останавливаем на последнем/первом слове
+          return;
+        }
+        updateDisplay(); // Обновляем экран
+      }, delay);
+
+      playPauseButton.textContent = '⏸';
+      isPlaying = true;
+      requestWakeLock(); // Запрашиваем блокировку экрана
+    }
+
+     // Функция для перезапуска таймера с текущего индекса (например, при смене скорости)
+    function startFromCurrentIndex() {
+        if (!isPlaying) return; // Не перезапускаем, если не играло
+        startReading(direction); // Запускаем снова с текущим направлением
+    }
+
+    function stopReading() {
+      clearInterval(timer);
+      timer = null; // Сбрасываем таймер
+      playPauseButton.textContent = '▶';
+      isPlaying = false;
+      releaseWakeLock(); // Освобождаем блокировку экрана
+      // Может быть полезно обновить дисплей еще раз, чтобы показать финальную позицию
+      if (words.length > 0) {
+          updateDisplay();
+      }
+    }
+
+    // *** ИЗМЕНЕННАЯ ФУНКЦИЯ ***
+    function updateDisplay() {
+      if (words.length === 0) {
+          // Можно отобразить сообщение или оставить пустым
+          wordDisplay.innerHTML = '<div class="current-word">No text loaded</div>';
+          progressBar.style.width = '0%';
+          if (document.activeElement !== startInput) startInput.value = '0';
+          return;
+      }
+
+      // Убедимся, что индекс в допустимых границах
+      index = Math.max(0, Math.min(index, words.length - 1));
+
+      const pct = (index / (words.length - 1 || 1)) * 100; // Делим на words.length - 1 чтобы 100% было на последнем слове
+      progressBar.style.width = pct + '%';
+
+      // Обновляем поле ввода % только если оно не в фокусе
+      if (document.activeElement !== startInput) {
+          startInput.value = pct.toFixed(6);
+      }
+
+      // Сохраняем прогресс
+      if (bookKey) {
+          const prog = JSON.parse(localStorage.getItem('fb2_progress')) || {};
+          prog[bookKey] = { index, percent: pct.toFixed(6) };
+          localStorage.setItem('fb2_progress', JSON.stringify(prog));
+      }
+
+      wordDisplay.innerHTML = ''; // Очищаем предыдущие слова
+      for (let i = index - 5; i <= index + 5; i++) {
+        // Пропускаем индексы за пределами массива слов
+        if (i < 0 || i >= words.length) continue;
+
+        const span = document.createElement('div');
+        span.textContent = words[i];
+
+        if (i === index) {
+          span.className = 'current-word';
+           // Цвет центрального слова уже задан в CSS (.current-word { color: #ccc; })
+        } else {
+          // Рассчитываем "расстояние" от центрального слова
+          const d = Math.abs(i - index);
+          // Рассчитываем фактор яркости (чем дальше, тем меньше)
+          const f = Math.max(0, 1 - d / 6); // f будет от 1 (рядом) до 1/6 (далеко), не меньше 0
+
+          // *** Расчет цвета для вспомогательных слов ***
+          // Умножаем фактор на базовое значение серого (128 = #808080)
+          // Чем меньше значение (например, 100, 80), тем темнее будут слова
+          const baseGrayValue = 100; // <-- ИЗМЕНИТЕ ЭТО ЗНАЧЕНИЕ ДЛЯ НАСТРОЙКИ ТЕМНОТЫ (0-204)
+          const grayValue = Math.floor(f * baseGrayValue);
+
+          // Преобразуем значение в HEX формат (#RRGGBB)
+          const hexColorPart = grayValue.toString(16).padStart(2, '0');
+          span.style.color = `#${hexColorPart}${hexColorPart}${hexColorPart}`;
+
+          // Опционально: можно сделать их немного меньше размером
+          // span.style.fontSize = `${1 - d * 0.08}em`; // Уменьшаем размер шрифта на 8% за каждое слово от центра
+        }
+        wordDisplay.appendChild(span);
+      }
+    }
+    // *** КОНЕЦ ИЗМЕНЕННОЙ ФУНКЦИИ ***
+
+    function saveSettings() {
+      localStorage.setItem('fb2_settings', JSON.stringify({
+        font: fontSelect.value,
+        fontSize: fontSizeInput.value,
+        speed: speedInput.value
+      }));
+    }
+
+    // Простой хэш-код для строки
+    function hashCode(s) {
+      let hash = 0;
+      if (s.length === 0) return hash;
+      for (let i = 0; i < s.length; i++) {
+        const char = s.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash |= 0; // Convert to 32bit integer
+      }
+      return hash.toString();
+    }
+
+    // --- Инициализация при загрузке страницы ---
+    // Показываем кнопку Open, если нет загруженной книги (или текст пустой)
+    if (words.length === 0) {
+        centerOpenButton.style.display = 'block';
+        wordDisplay.style.display = 'none';
+    } else {
+        centerOpenButton.style.display = 'none';
+        wordDisplay.style.display = 'flex';
+        updateDisplay(); // Показываем первое/сохраненное слово
+    }
+
+  </script>
+</body>
+
+</html>
